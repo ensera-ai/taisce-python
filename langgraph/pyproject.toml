@@ -1,0 +1,15 @@
+[project]
+name = "taisce-langgraph"
+version = "0.1.0"
+description = "LangGraph adapter for Taisce: agent middleware that injects governed memory as one untrusted human message and records the turn afterwards."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = ["taisce>=0.1.0", "langchain>=1.0", "langgraph>=1.0", "langchain-core>=1.0"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["taisce_langgraph*"]

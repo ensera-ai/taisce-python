@@ -1,0 +1,15 @@
+[project]
+name = "taisce-agent-framework"
+version = "0.1.0"
+description = "Microsoft Agent Framework adapter for Taisce: a context provider that injects governed memory as one untrusted user message and records the turn afterwards."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = ["taisce>=0.1.0", "agent-framework-core>=1.18.0"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["taisce_agent_framework*"]
