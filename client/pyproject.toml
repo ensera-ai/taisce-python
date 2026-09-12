@@ -1,0 +1,15 @@
+[project]
+name = "taisce"
+version = "0.1.0"
+description = "Client for a Taisce memory deployment: the v1 contract, no agent framework."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = ["httpx>=0.27"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["taisce*"]

@@ -1,0 +1,91 @@
+# Copyright 2026 The Taisce Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# A release is a tag, built and published by this workflow through PyPI trusted publishing: no
+# long-lived token exists anywhere, and each package carries a provenance attestation.
+#
+# ── WHY PUBLICATION IS THREE JOBS AND NOT ONE ────────────────────────────────────────────────────
+#
+# This repository holds three distributions, and PyPI identifies a trusted publisher by the claims
+# in the OIDC token: owner, repository, workflow and environment. Publishing all three from one job
+# presents one identical claim set for three different project names, which PyPI refuses — it cannot
+# tell which project an upload belongs to. So each distribution publishes from its own job under its
+# own environment, which is what makes the three claim sets distinct.
+#
+# The environment is also the approval gate: a reviewer required on the environment holds the upload
+# until somebody says yes, and a package that has left for PyPI cannot be recalled.
+name: release
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ./client -e ./agent-framework -e ./langgraph pytest pytest-asyncio build
+      - run: pytest client/tests agent-framework/tests langgraph/tests -q
+      - run: |
+          set -euo pipefail
+          for p in client agent-framework langgraph; do python -m build --outdir "dist/$p" "$p"; done
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  taisce:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi-taisce
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/client
+
+  agent-framework:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi-agent-framework
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/agent-framework
+
+  langgraph:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi-langgraph
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/langgraph

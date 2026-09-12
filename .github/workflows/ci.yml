@@ -1,0 +1,22 @@
+# Copyright 2026 The Taisce Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# The deployment-free tests on every push and pull request. The conformance suite needs a live
+# deployment and the service's runner; its output is the evidence an adapter release carries.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ./client -e ./agent-framework -e ./langgraph pytest pytest-asyncio
+      - run: pytest client/tests agent-framework/tests langgraph/tests -q
