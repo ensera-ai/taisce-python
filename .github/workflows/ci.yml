@@ -20,4 +20,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -e ./client -e ./agent-framework -e ./langgraph pytest pytest-asyncio
-      - run: pytest client/tests agent-framework/tests langgraph/tests -q
+      - run: pytest client/tests agent-framework/tests langgraph/tests tests -q
