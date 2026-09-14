@@ -18,6 +18,14 @@
 # The environments admit only `v*.*.*` tags, so a job on a branch cannot mint a token PyPI accepts.
 # Actions are referenced by commit SHA: a tag can be moved by whoever controls the action's
 # repository, and a moved tag would run their code in the job that holds the publishing token.
+#
+# ── WHY THE TAG IS CHECKED BEFORE ANYTHING ELSE ─────────────────────────────────────────────────
+#
+# Each package is built with the version its `pyproject.toml` holds, and its attestation names the tag
+# that started the run. If the two disagree, one version is published with provenance naming another,
+# and PyPI cannot take it back. So the first step refuses the run unless every package's version is the
+# tag without its `v`. It runs before anything is installed, built or attested, so a refused run leaves
+# nothing behind. `scripts/release_version.py` says what it does not check.
 name: release
 on:
   push:
@@ -36,6 +44,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+      - run: python scripts/release_version.py "$GITHUB_REF_NAME"
       - run: pip install -e ./client -e ./agent-framework -e ./langgraph pytest pytest-asyncio build
       - run: pytest client/tests agent-framework/tests langgraph/tests -q
       - run: |
