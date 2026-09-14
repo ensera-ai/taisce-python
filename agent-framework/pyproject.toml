@@ -1,6 +1,6 @@
 [project]
 name = "taisce-agent-framework"
-version = "0.1.1"
+version = "0.1.2"
 description = "Microsoft Agent Framework adapter for Taisce: a context provider that injects governed memory as one untrusted user message and records the turn afterwards."
 readme = "README.md"
 requires-python = ">=3.10"
