@@ -18,7 +18,7 @@ from typing import Any, Mapping, Sequence
 import httpx
 from agent_framework import Agent, BaseChatClient, ChatResponse, Content, InMemoryHistoryProvider, Message
 
-from taisce import Client
+from taisce import Client, ErasureNotClean, ErasureReceipt
 from taisce_agent_framework import TaisceCompaction, TaisceContextProvider, UNTRUSTED_PROPERTY
 
 
@@ -91,6 +91,34 @@ async def run_turn(instruction: dict) -> dict:
     return report
 
 
+async def run_erase(instruction: dict) -> dict:
+    """The erase action: the person erased through the client this adapter is built on, and the
+    receipt reported as the client handed it over, with the error it raised when it raised one."""
+    async with Client(instruction["api"], instruction["token"]) as client:
+        try:
+            receipt = await client.erase_subject(instruction["data_subject_id"], reason="conformance")
+        except ErasureNotClean as raised:
+            return {"erasure": _receipt(raised.receipt, str(raised))}
+        except Exception as raised:  # noqa: BLE001 - whatever the client raised is what the suite judges
+            return {"erasure": {"error": str(raised) or type(raised).__name__}}
+    return {"erasure": _receipt(receipt, "")}
+
+
+def _receipt(receipt: ErasureReceipt, error: str) -> dict:
+    return {"deleted": receipt.deleted, "residual": receipt.residual, "clean": receipt.clean, "error": error}
+
+
+async def run(instruction: dict) -> dict:
+    """One instruction: a turn, or an action. An action this driver does not know is an error rather
+    than an empty turn, because a turn nobody asked for would be stored."""
+    action = instruction.get("action") or ""
+    if action == "":
+        return await run_turn(instruction)
+    if action == "erase":
+        return await run_erase(instruction)
+    raise ValueError(f"unknown action {action!r}")
+
+
 async def main() -> int:
     loop = asyncio.get_running_loop()
     while True:
@@ -99,7 +127,7 @@ async def main() -> int:
             return 0
         if not line.strip():
             continue
-        report = await run_turn(json.loads(line))
+        report = await run(json.loads(line))
         sys.stdout.write(json.dumps(report) + "\n")
         sys.stdout.flush()
 

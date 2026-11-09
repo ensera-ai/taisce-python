@@ -3,11 +3,23 @@
 #
 # The deployment-free tests on every push and pull request. The conformance suite needs a live
 # deployment and the service's runner; its output is the evidence an adapter release carries.
+#
+# Two installs, because a package publishes two promises. The newest dependencies are what a fresh
+# install gets. The floors in each pyproject.toml are the oldest versions the package says it works
+# with, and an application whose lock already holds one installs this package without moving it — so
+# a floor is tested, at the lowest versions its declarations allow, or it is a guess. Each install is
+# audited for published advisories, and the audit fails the job: an alert asks somebody to look, a
+# failing check stops the change.
+#
+# Daily as well, because a new advisory against a dependency that has not changed arrives without a
+# commit to trigger anything.
 name: ci
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '23 5 * * *'
 permissions:
   contents: read
 jobs:
@@ -19,5 +31,28 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - run: pip install -e ./client -e ./agent-framework -e ./langgraph pytest pytest-asyncio
+      - run: pip install -e ./client -e ./agent-framework -e ./langgraph pytest pytest-asyncio pip-audit
       - run: pytest client/tests agent-framework/tests langgraph/tests tests -q
+      # The packages under test are editable and unpublished at this commit, so they are skipped;
+      # everything they pull in is audited.
+      - name: Published advisories, newest dependencies
+        run: pip-audit --skip-editable --progress-spinner off
+
+  floors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      # lowest-direct takes each package's own declared floor and resolves the rest normally. The
+      # test tools carry floors of their own, because unbounded they would resolve to versions from
+      # another decade and fail for reasons that say nothing about these packages.
+      - run: |
+          uv venv .floors
+          uv pip install --python .floors --resolution lowest-direct \
+            -e ./client -e ./agent-framework -e ./langgraph "pytest>=9.0.3" "pytest-asyncio>=0.23" "pip-audit>=2.10"
+      - run: .floors/bin/pytest client/tests agent-framework/tests langgraph/tests tests -q
+      - name: Published advisories, at the floors
+        run: .floors/bin/pip-audit --skip-editable --progress-spinner off

@@ -51,14 +51,33 @@ def is_memory_text(text: Optional[str]) -> bool:
     return bool(text) and text.startswith(MEMORY_MESSAGE_PREFIX)
 
 
+# Named in the first field hashed, so a key from this derivation never equals one from another.
+TURN_KEY_DERIVATION = "taisce-turn-key/2"
+
+
 def turn_key(data_subject_id: Optional[str], run_id: Optional[str], messages: Sequence[Mapping[str, str]]) -> str:
     """A turn's key: a version-5 UUID over the subject, the run and the messages, so a retried
-    store is one observation and a different turn is another."""
-    text = (data_subject_id or "") + "\n" + (run_id or "") + "\n"
+    store is one observation and a different turn is another.
+
+    Every field is a netstring — its length in UTF-8 bytes, ``:``, the bytes, ``,`` — so content
+    cannot move a boundary. Joined by a separator instead, a reply holding a newline and a role name
+    made two different turns hash the same bytes, and the deployment refused the second as a
+    conflicting retry on every attempt. The specification and its vectors are the conformance
+    suite's; every adapter derives the same bytes.
+    """
+    digest = hashlib.sha256()
+
+    def netstring(field: str) -> None:
+        data = field.encode("utf-8")
+        digest.update(str(len(data)).encode("ascii") + b":" + data + b",")
+
+    netstring(TURN_KEY_DERIVATION)
+    netstring(data_subject_id or "")
+    netstring(run_id or "")
     for m in messages:
-        text += m["role"] + "\n" + m["content"] + "\n"
-    digest = hashlib.sha256(text.encode("utf-8")).digest()
-    raw = bytearray(digest[:16])
+        netstring(m["role"])
+        netstring(m["content"])
+    raw = bytearray(digest.digest()[:16])
     raw[6] = (raw[6] & 0x0F) | 0x50
     raw[8] = (raw[8] & 0x3F) | 0x80
     return str(uuid.UUID(bytes=bytes(raw)))
