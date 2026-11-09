@@ -39,12 +39,6 @@ def test_a_turn_key_is_stable_for_a_turn_and_different_for_another():
     assert key != turn_key("subject-1", "run-1", [{"role": "user", "content": "hello again"}])
 
 
-def test_the_turn_key_is_the_same_bytes_as_the_dotnet_adapter():
-    # The .NET adapter derives the same key from the same inputs; a turn stored by both is one
-    # observation. The value below is what its TurnKey returns for these inputs.
-    assert turn_key("subject-1", "run-1", [{"role": "user", "content": "hello"}]) == turn_key("subject-1", "run-1", [{"role": "user", "content": "hello"}])
-
-
 def test_the_memory_message_is_the_prefix_line_and_one_document():
     bundle = {"controls": {"hops": 1}, "facts": [{"fact_id": "f1", "statement": "Marta works at Ensera."}],
               "reports": [], "passages": [], "degraded": [], "reach": {"terms": 1}}

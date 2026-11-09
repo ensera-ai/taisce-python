@@ -9,12 +9,18 @@ deployment this client was built for, and never logged.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Mapping, Optional, Sequence
+from urllib.parse import urlsplit
 
 import base64
+import ipaddress
 
 import httpx
+
+# The service refuses an erasure naming more sources than this; refusing it here says so before the
+# credential is spent on a request that cannot succeed.
+MAX_ERASURE_SOURCES = 10000
 
 
 class TaisceError(Exception):
@@ -25,6 +31,113 @@ class TaisceError(Exception):
         self.status = status
         self.code = code
         self.message = message
+
+
+class Forbidden(TaisceError):
+    """The credential's access does not cover the operation: a read-only key changing memory, or an
+    agent key erasing a person. Retrying with the same key cannot succeed."""
+
+
+class ExportTooLarge(TaisceError):
+    """The subject holds more rows than one export returns. The deployment refuses rather than
+    truncates, because an export that silently stops short is a false answer to an access request."""
+
+
+@dataclass(frozen=True)
+class ErasureReceipt:
+    """What an erasure did, as the deployment counted it.
+
+    ``residual`` is the product: a count of what still matches, taken after the delete in the same
+    transaction. ``clean`` is that every residual is zero. A receipt that is not clean is never handed
+    back as a value; :class:`ErasureNotClean` carries it instead.
+    """
+
+    request_id: str
+    scope: str
+    data_subject_id: str
+    source_observation_ids: List[str]
+    completed_at: str
+    deleted: Dict[str, int]
+    residual: Dict[str, int]
+    clean: bool
+
+    @staticmethod
+    def _from(data: Mapping[str, Any]) -> "ErasureReceipt":
+        return ErasureReceipt(
+            request_id=data.get("request_id", ""), scope=data.get("scope", ""),
+            data_subject_id=data.get("data_subject_id", ""),
+            source_observation_ids=list(data.get("source_observation_ids") or []),
+            completed_at=data.get("completed_at", ""),
+            deleted={k: int(v) for k, v in (data.get("deleted") or {}).items()},
+            residual={k: int(v) for k, v in (data.get("residual") or {}).items()},
+            clean=bool(data.get("clean")),
+        )
+
+
+class ErasureNotClean(Exception):
+    """An erasure completed and rows still match what it named.
+
+    Raised rather than returned so that an application which never reads the receipt cannot tell a
+    person their data is gone while it is not. The receipt is on ``receipt``, whole.
+    """
+
+    def __init__(self, receipt: ErasureReceipt) -> None:
+        left = {k: v for k, v in receipt.residual.items() if v}
+        super().__init__(f"the erasure left rows matching what it named: {left}")
+        self.receipt = receipt
+
+
+@dataclass(frozen=True)
+class Export:
+    """Everything the deployment holds for a person or a set of sources.
+
+    ``sections`` are raw rows keyed by what produced them, unshaped so that a column a migration
+    added is in the export without anybody remembering to add it here. ``rows`` counts each section,
+    so an export can be compared with an erasure receipt without parsing either.
+    """
+
+    scope: str
+    data_subject_id: str
+    source_observation_ids: List[str]
+    sections: Dict[str, List[Any]] = field(default_factory=dict)
+    rows: Dict[str, int] = field(default_factory=dict)
+
+    @staticmethod
+    def _from(data: Mapping[str, Any]) -> "Export":
+        return Export(
+            scope=data.get("scope", ""), data_subject_id=data.get("data_subject_id", ""),
+            source_observation_ids=list(data.get("source_observation_ids") or []),
+            sections={k: list(v or []) for k, v in (data.get("sections") or {}).items()},
+            rows={k: int(v) for k, v in (data.get("rows") or {}).items()},
+        )
+
+
+def _require_transport(base_url: str) -> None:
+    """Refuses an address the credential would cross the network in clear to reach.
+
+    Every request carries the project credential, and a project holds every end user's memory. One
+    mistyped or downgraded address would send it to anyone on the path, readable, until somebody
+    revokes it. Plaintext is allowed only to a loopback host, which never leaves the machine: that is
+    where a development deployment and every conformance run live. There is no switch to allow more,
+    because nothing has needed one, and a switch is the thing that gets left on.
+    """
+    parts = urlsplit(base_url.strip())
+    if parts.scheme == "https" and parts.hostname:
+        return
+    if parts.scheme == "http" and parts.hostname and _is_loopback(parts.hostname):
+        return
+    raise ValueError(
+        "a deployment address must be https, or http to a loopback host: "
+        "the credential travels with every request and would otherwise cross the network in clear")
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -45,6 +158,7 @@ class Client:
             raise ValueError("a deployment address is required")
         if not token or not token.strip():
             raise ValueError("a credential is required")
+        _require_transport(base_url)
         self.base_url = base_url.rstrip("/")
         self._owns_http = http is None
         self._http = http or httpx.AsyncClient(timeout=timeout)
@@ -164,6 +278,50 @@ class Client:
             body["limit"] = limit
         return await self._post("/v1/citations/resolve", body, 200)
 
+    async def erase_subject(self, data_subject_id: str, *, reason: str) -> ErasureReceipt:
+        """Erases everything held for one person and returns the deployment's receipt.
+
+        Raises :class:`ErasureNotClean` when rows still match afterwards, and :class:`Forbidden` when
+        the credential may not erase. An agent key may not, by design: give this call the key your
+        application's erasure path holds, never the one in the agent process.
+        """
+        if not data_subject_id or not data_subject_id.strip():
+            raise ValueError("an erasure names the person it is for; one naming nobody would be a scope-wide delete")
+        return await self._erase({"data_subject_id": data_subject_id, "reason": reason})
+
+    async def erase_sources(self, source_observation_ids: Sequence[str], *, reason: str) -> ErasureReceipt:
+        """Erases what the named observations said and everything formed from them.
+
+        A separate method from :meth:`erase_subject` because the deployment refuses a request naming
+        both a person and sources: the receipt says what was asked, and it was one thing.
+        """
+        ids = list(source_observation_ids)
+        if not ids:
+            raise ValueError("an erasure by source names at least one observation")
+        if len(ids) > MAX_ERASURE_SOURCES:
+            raise ValueError(f"an erasure names at most {MAX_ERASURE_SOURCES} source observations")
+        return await self._erase({"source_observation_ids": ids, "reason": reason})
+
+    async def export_subject(self, data_subject_id: str) -> Export:
+        """Everything held for one person, for an access request. Raises :class:`ExportTooLarge`
+        rather than returning part of it."""
+        if not data_subject_id or not data_subject_id.strip():
+            raise ValueError("an export names the person it is for")
+        return Export._from(await self._post("/v1/exports", {"data_subject_id": data_subject_id}, 200))
+
+    async def export_sources(self, source_observation_ids: Sequence[str]) -> Export:
+        """Everything held from the named observations."""
+        ids = list(source_observation_ids)
+        if not ids:
+            raise ValueError("an export by source names at least one observation")
+        return Export._from(await self._post("/v1/exports", {"source_observation_ids": ids}, 200))
+
+    async def _erase(self, body: dict) -> ErasureReceipt:
+        receipt = ErasureReceipt._from(await self._post("/v1/erasures", body, 200))
+        if not receipt.clean:
+            raise ErasureNotClean(receipt)
+        return receipt
+
     async def _post(self, path: str, body: dict, success: int) -> dict:
         response = await self._http.post(self.base_url + path, json=body, headers=self._headers)
         return self._read(response, success)
@@ -179,6 +337,10 @@ class Client:
             message = error.get("message") or message
         except ValueError:
             pass
+        if response.status_code == 403 and code == "forbidden":
+            raise Forbidden(response.status_code, code, message)
+        if response.status_code == 422 and code == "export_too_large":
+            raise ExportTooLarge(response.status_code, code, message)
         raise TaisceError(response.status_code, code, message)
 
 
